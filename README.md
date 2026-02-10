@@ -1,155 +1,128 @@
-<!-- © 2024 | Ironhack -->
+# Multi-Stack DevOps Infrastructure Automation (AWS + Terraform + Ansible)
+
+A fully automated multi-service voting application deployed on AWS, combining multiple technology stacks with Infrastructure-as-Code tooling and secure deployment practices.
 
 ---
 
-# Multi-Stack Voting Application
+## Project Overview
 
-**Welcome to your DevOps practice project!** This repository hosts a multi-stack voting application composed of several services, each implemented in a different language and technology stack. The goal is to help you gain experience with containerization, orchestration, and running a distributed set of services—both individually and as part of a unified system.
+This project provisions, configures, and deploys a microservice-based voting application on AWS EC2 using a complete DevOps toolchain. The application consists of three independently containerized services — built with Python (Flask), Node.js (Express), and C# (.NET) — all orchestrated through Docker Compose and deployed to cloud infrastructure managed entirely through code.
 
-This application, while simple, uses multiple components commonly found in modern distributed architectures, giving you hands-on practice in connecting services, handling containers, and working with basic infrastructure automation.
-
-## Application Overview
-
-The voting application includes:
-
-- **Vote (Python)**: A Python Flask-based web application where users can vote between two options.
-- **Redis (in-memory queue)**: Collects incoming votes and temporarily stores them.
-- **Worker (.NET)**: A .NET 7.0-based service that consumes votes from Redis and persists them into a database.
-- **Postgres (Database)**: Stores votes for long-term persistence.
-- **Result (Node.js)**: A Node.js/Express web application that displays the vote counts in real time.
-
-### Why This Setup?
-
-The goal is to introduce you to a variety of languages, tools, and frameworks in one place. This is **not** a perfect production design. Instead, it’s intentionally diverse to help you:
-
-- Work with multiple runtimes and languages (Python, Node.js, .NET).
-- Interact with services like Redis and Postgres.
-- Containerize applications using Docker.
-- Use Docker Compose to orchestrate and manage multiple services together.
-
-By dealing with this “messy” environment, you’ll build real-world problem-solving skills. After this project, you should feel more confident tackling more complex deployments and troubleshooting issues in containerized, multi-service setups.
+The application was first built and tested locally using Docker Compose, then deployed to AWS — following a real-world development workflow of local validation before cloud deployment. Infrastructure was provisioned with Terraform, servers were configured with Ansible, and containers were deployed securely through a Bastion Host — without any manual setup on the target machines.
 
 ---
 
-## How to Run Each Component
+## Architecture
 
-### Running the Vote Service (Python) Locally (No Docker)
-
-1. Ensure you have Python 3.10+ installed.
-2. Navigate to the `vote` directory:
-   ```bash
-   cd vote
-   pip install -r requirements.txt
-   python app.py
-   ```
-   Access the vote interface at [http://localhost:5000](http://localhost:5000).
-
-### Running Redis Locally (No Docker)
-
-1. Install Redis on your system ([https://redis.io/docs/getting-started/](https://redis.io/docs/getting-started/)).
-2. Start Redis:
-   ```bash
-   redis-server
-   ```
-   Redis will be available at `localhost:6379`.
-
-### Running the Worker (C#/.NET) Locally (No Docker)
-
-1. Ensure .NET 7.0 SDK is installed.
-2. Navigate to `worker`:
-   ```bash
-   cd worker
-   dotnet restore
-   dotnet run
-   ```
-   The worker will attempt to connect to Redis and Postgres when available.
-
-### Running Postgres Locally (No Docker)
-
-1. Install Postgres from [https://www.postgresql.org/download/](https://www.postgresql.org/download/).
-2. Start Postgres, note the username and password (default `postgres`/`postgres`):
-   ```bash
-   # On many systems, Postgres runs as a service once installed.
-   ```
-   Postgres will be available at `localhost:5432`.
-
-### Running the Result Service (Node.js) Locally (No Docker)
-
-1. Ensure Node.js 18+ is installed.
-2. Navigate to `result`:
-   ```bash
-   cd result
-   npm install
-   node server.js
-   ```
-   Access the results interface at [http://localhost:4000](http://localhost:4000).
-
-**Note:** To get the entire system working end-to-end (i.e., votes flowing through Redis, processed by the worker, stored in Postgres, and displayed by the result app), you’ll need to ensure each component is running and that connection strings or environment variables point to the correct services.
-
----
-
-## Running the Entire Stack in Docker
-
-### Building and Running Individual Services
-
-You can build each service with Docker and run them individually:
-
-- **Vote (Python)**:
-  ```bash
-  docker build -t myorg/vote:latest ./vote
-  docker run --name vote -p 8080:80 myorg/vote:latest
-  ```
-  Visit [http://localhost:8080](http://localhost:8080).
-
-- **Redis** (official image, no build needed):
-  ```bash
-  docker run --name redis -p 6379:6379 redis:alpine
-  ```
-
-- **Worker (.NET)**:
-  ```bash
-  docker build -t myorg/worker:latest ./worker
-  docker run --name worker myorg/worker:latest
-  ```
-  
-- **Postgres**:
-  ```bash
-  docker run --name db -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:15-alpine
-  ```
-
-- **Result (Node.js)**:
-  ```bash
-  docker build -t myorg/result:latest ./result
-  docker run --name result -p 8081:80 myorg/result:latest
-  ```
-  Visit [http://localhost:8081](http://localhost:8081).
-
-### Using Docker Compose
-
-The easiest way to run the entire stack is via Docker Compose. From the project root directory:
-
-```bash
-docker compose up
+```
+Internet
+   │
+   ▼
+[ Bastion Host ] ── public subnet
+   │
+   ▼ (SSH tunnel)
+[ App Servers ]  ── private subnet
+   ├── Flask (Python) - Voting Service
+   ├── Express (Node.js) - Result Service
+   └── .NET (C#) - Worker Service
 ```
 
-This will:
-
-- Build and run the vote, worker, and result services.
-- Run Redis and Postgres from their official images.
-- Set up networks, volumes, and environment variables so all services can communicate.
-
-Visit [http://localhost:8080](http://localhost:8080) to vote and [http://localhost:8081](http://localhost:8081) to see results.
+- **VPC** with public and private subnets
+- **Bastion Host** in the public subnet for secure SSH access
+- **EC2 instances** in private subnets running the application services
+- **Security Groups** controlling traffic between tiers
+- **Ansible** connects through the Bastion Host to configure and deploy to private instances
 
 ---
 
-## Notes on Platforms (arm64 vs amd64)
+## Tech Stack
 
-If you’re on an arm64 machine (e.g., Apple Silicon M1/M2) and encounter issues with images or dependencies that assume amd64, you can use Docker `buildx`:
-
-```bash
-docker buildx build --platform linux/amd64 -t myorg/worker:latest ./worker
-```
-
-This ensures the image is built for the desired platform.
+| Category | Tools |
+|---|---|
+| Cloud Provider | AWS (VPC, EC2, Subnets, Security Groups) |
+| Infrastructure as Code | Terraform |
+| Configuration Management | Ansible |
+| Containerization | Docker, Docker Compose |
+| Application Services | Python (Flask), Node.js (Express), C# (.NET) |
+| Access Pattern | Bastion Host (jump server) |
 
 ---
+
+## What I Built
+
+**Infrastructure (Terraform)**
+- Provisioned a custom VPC with public and private subnets
+- Created EC2 instances with appropriate IAM and networking
+- Defined security groups to restrict traffic between the Bastion Host, application servers, and the internet
+- Managed the full lifecycle with `terraform init`, `plan`, `apply`, and `destroy`
+
+**Configuration & Deployment (Ansible)**
+- Wrote Ansible playbooks to install Docker and deploy containers on private EC2 instances
+- Configured SSH access through the Bastion Host using ProxyJump
+- Automated the entire deployment — no manual SSH into target machines required
+
+**Application (Docker)**
+- Containerized three microservices using Dockerfiles
+- Used Docker Compose to define and run the multi-container application locally
+- Each service runs independently and communicates over a shared Docker network
+
+---
+
+## Key Learnings
+
+- How to design a **secure network topology** on AWS with public/private subnet separation
+- Using a **Bastion Host** as a controlled entry point into private infrastructure
+- Writing **Terraform configurations** to manage cloud resources declaratively
+- Using **Ansible over SSH tunnels** to automate remote server setup without direct access
+- Containerizing applications across **multiple languages and frameworks**
+- Understanding the end-to-end flow from **infrastructure provisioning → configuration → deployment**
+
+---
+
+## How to Run
+
+### Prerequisites
+- AWS account with CLI configured
+- Terraform installed
+- Ansible installed
+- Docker & Docker Compose installed
+
+### Steps
+
+1. **Provision infrastructure**
+   ```bash
+   cd terraform/
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+
+2. **Configure and deploy with Ansible**
+   ```bash
+   cd ansible/
+   ansible-playbook -i inventory playbook.yml
+   ```
+
+3. **Run locally with Docker Compose**
+   ```bash
+   docker-compose up --build
+   ```
+
+---
+
+## Note
+
+The voting application is based on [Docker's example voting app](https://github.com/dockersamples/example-voting-app). My focus in this project was on the **infrastructure automation, secure network design, and deployment pipeline** — not the application code itself.
+
+## Project Status
+
+This was a bootcamp project focused on building a strong foundation in cloud automation and DevOps practices. It represents my hands-on experience with real-world infrastructure tooling in a secure, multi-tier AWS environment.
+
+---
+
+## Future Improvements
+
+- Add a CI/CD pipeline (e.g. GitHub Actions) for automated deployments
+- Introduce monitoring with CloudWatch or Prometheus/Grafana
+- Migrate to ECS or Kubernetes for container orchestration
+- Add Terraform remote state with S3 backend and state locking via DynamoDB
