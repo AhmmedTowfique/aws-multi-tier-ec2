@@ -1,39 +1,55 @@
-# Ironhack note - This file is for running in docker compose with prebuilt images
-# Use these if you're stuck, or if you want to start slowly migrating from external images into your own.
-
 services:
   vote:
-    image: pokfinner/vote:latest
- #  build: ./vote
+    build: ./vote
+    environment:
+      - OPTION_A=${VOTE_OPTION_A:-Cats}
+      - OPTION_B=${VOTE_OPTION_B:-Dogs}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=80
+    ports:
+      - "${VOTE_SERVICE_PORT:-8080}:80"
     depends_on:
       redis:
-        condition: service_healthy 
-    ports:
-      - "8080:80"
+        condition: service_healthy
     networks:
       - back-tier
+    restart: unless-stopped
 
   result:
-    image: pokfinner/result:latest
- #  build: ./result
+    build: ./result
+    environment:
+      - PORT=80
+      - PG_HOST=db
+      - PG_PORT=5432
+      - PG_USER=${POSTGRES_USER}
+      - PG_PASSWORD=${POSTGRES_PASSWORD}
+      - PG_DATABASE=${POSTGRES_DB}
+    ports:
+      - "${RESULT_SERVICE_PORT:-8081}:80"
     depends_on:
       db:
-        condition: service_healthy 
-    ports:
-      - "8081:80"
+        condition: service_healthy
     networks:
       - back-tier
+    restart: unless-stopped
 
   worker:
- #  build: ./worker
-    image: pokfinner/worker:latest
+    build: ./worker
+    environment:
+      - DB_HOST=db
+      - DB_USERNAME=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - REDIS_HOST=redis
     depends_on:
       redis:
-        condition: service_healthy 
+        condition: service_healthy
       db:
-        condition: service_healthy 
+        condition: service_healthy
     networks:
       - back-tier
+    restart: unless-stopped
 
   redis:
     image: redis:alpine
@@ -44,12 +60,14 @@ services:
       interval: "5s"
     networks:
       - back-tier
+    restart: unless-stopped
 
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: "postgres"
-      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - "db-data:/var/lib/postgresql/data"
       - "./healthchecks:/healthchecks"
@@ -58,6 +76,7 @@ services:
       interval: "5s"
     networks:
       - back-tier
+    restart: unless-stopped
 
 volumes:
   db-data:

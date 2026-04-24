@@ -1,7 +1,5 @@
-# Exclude build artifacts and unnecessary files
 bin/
 obj/
-*.md
-*.git
-*.gitignore
-.vscode/
+*.user
+.vs/
+.env
