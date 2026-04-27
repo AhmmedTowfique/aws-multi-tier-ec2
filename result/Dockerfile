@@ -1,20 +1,17 @@
 FROM node:18-slim
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends tini && \
+RUN apt-get update && apt-get install -y --no-install-recommends tini && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/local/app
-
 COPY package*.json ./
 RUN npm ci && npm cache clean --force
-
 COPY . .
 
-# Only bake in truly internal conventions
-ENV PORT=80
+# Use the built-in node user (already exists in node:18-slim)
+RUN chown -R node:node /usr/local/app
+USER node
 
-EXPOSE 80
-
+ENV PORT=8000
+EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]
