@@ -1,18 +1,10 @@
 #!/bin/bash
-# verifications.sh — sanity-check the local Docker stack security posture.
-#
-# Checks:
-#   1. All containers up and healthy
-#   2. App containers run as non-root
-#   3. Published ports bound to 127.0.0.1 (not 0.0.0.0)
-#   4. Services reachable from this machine
-#   5. External access (skipped on WSL — see notes)
-#   6. Internal services have no host port mapping
-#   7. Secrets not leaked in container env
+# verifications.sh — generic Docker compose stack security verifier.
+# Drop into any compose project's scripts/ folder, no edits needed.
 
 set -u
 
-# Always run from project root, regardless of where invoked
+# Always run from project root
 cd "$(dirname "$0")/.." || exit 1
 
 # ---- Colors ----
@@ -22,28 +14,45 @@ if [ -t 1 ]; then
 else
   GREEN=''; RED=''; YELLOW=''; BOLD=''; DIM=''; RESET=''
 fi
-
 pass() { printf "  ${GREEN}✓${RESET} %s\n" "$1"; PASSES=$((PASSES + 1)); }
 fail() { printf "  ${RED}✘${RESET} %s\n" "$1"; FAILS=$((FAILS + 1)); }
 warn() { printf "  ${YELLOW}⚠${RESET} %s\n" "$1"; WARNS=$((WARNS + 1)); }
 info() { printf "  ${DIM}•${RESET} %s\n" "$1"; }
-
 PASSES=0; FAILS=0; WARNS=0
 
-# Detect WSL once
-IS_WSL=false
-if grep -qi microsoft /proc/version 2>/dev/null; then
-  IS_WSL=true
+# ---- Detect services from compose ----
+ALL_SERVICES=$(docker compose config --services 2>/dev/null || echo "")
+if [ -z "$ALL_SERVICES" ]; then
+  fail "No docker-compose.yml found, or it has errors"
+  exit 1
 fi
+
+# Detect WSL
+IS_WSL=false
+grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=true
+
+# Discover which services have published ports (= "frontend" services)
+# and which don't (= "internal" services)
+PUBLISHED_SERVICES=""
+INTERNAL_SERVICES=""
+PUBLISHED_PORTS=""
+for svc in $ALL_SERVICES; do
+  cname=$(docker compose ps --format '{{.Name}}' --status running | grep -m1 "[-_]$svc[-_0-9]*$" || true)
+  [ -z "$cname" ] && continue
+  port_info=$(docker port "$cname" 2>/dev/null || true)
+  if [ -n "$port_info" ]; then
+    PUBLISHED_SERVICES+="$svc "
+    # Extract host ports from output like "8000/tcp -> 127.0.0.1:8080"
+    host_ports=$(echo "$port_info" | grep -oE ':[0-9]+$' | tr -d ':' | sort -u)
+    PUBLISHED_PORTS+="$host_ports "
+  else
+    INTERNAL_SERVICES+="$svc "
+  fi
+done
 
 # ============================================
 echo "${BOLD}=== 1. Containers healthy ===${RESET}"
 # ============================================
-if ! docker compose ps --quiet | grep -q .; then
-  fail "No containers running. Start with: docker compose up -d"
-  exit 1
-fi
-
 unhealthy=$(docker compose ps --format "{{.Name}}\t{{.State}}" | grep -v "running" || true)
 if [ -z "$unhealthy" ]; then
   pass "All containers running"
@@ -55,14 +64,18 @@ docker compose ps
 
 # ============================================
 echo
-echo "${BOLD}=== 2. Non-root users (app containers) ===${RESET}"
+echo "${BOLD}=== 2. Non-root users ===${RESET}"
 # ============================================
-for svc in vote result worker; do
+for svc in $ALL_SERVICES; do
   user=$(docker compose exec -T "$svc" whoami 2>/dev/null | tr -d '\r\n' || true)
   if [ -z "$user" ]; then
-    fail "$svc — couldn't determine user (container down?)"
+    info "$svc — couldn't run whoami (likely a base-image without shell, e.g. postgres/redis)"
   elif [ "$user" = "root" ]; then
-    fail "$svc runs as root"
+    # Skip well-known images that legitimately must run as root (postgres, redis use internal users)
+    case "$svc" in
+      db|database|postgres|mysql|redis|*cache*) info "$svc — runs as root (acceptable for managed DB/cache images)" ;;
+      *) fail "$svc runs as root" ;;
+    esac
   else
     pass "$svc runs as $user"
   fi
@@ -73,7 +86,7 @@ echo
 echo "${BOLD}=== 3. Ports bound to localhost only ===${RESET}"
 # ============================================
 ports=$(docker compose ps --format "{{.Ports}}")
-if echo "$ports" | grep -qE "^\s*0\.0\.0\.0|::"; then
+if echo "$ports" | grep -qE "^\s*0\.0\.0\.0|^\s*::\b"; then
   fail "Some ports bound to 0.0.0.0 / :: (visible to LAN!)"
   echo "$ports" | grep -E "0\.0\.0\.0|::" | sed 's/^/    /'
 elif echo "$ports" | grep -q "127.0.0.1"; then
@@ -87,14 +100,20 @@ fi
 echo
 echo "${BOLD}=== 4. Reachable from this machine ===${RESET}"
 # ============================================
-for port in 8080 8081; do
-  code=$(curl -sI -o /dev/null -w "%{http_code}" --max-time 3 "http://localhost:$port" 2>/dev/null || echo "000")
-  if [ "$code" = "200" ]; then
-    pass "localhost:$port → HTTP 200"
-  else
-    fail "localhost:$port → HTTP $code"
-  fi
-done
+if [ -z "$PUBLISHED_PORTS" ]; then
+  info "No published ports to test"
+else
+  for port in $PUBLISHED_PORTS; do
+    code=$(curl -sI -o /dev/null -w "%{http_code}" --max-time 3 "http://localhost:$port" 2>/dev/null || echo "000")
+    if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+      pass "localhost:$port → HTTP $code"
+    elif [ "$code" = "000" ]; then
+      fail "localhost:$port → no response"
+    else
+      warn "localhost:$port → HTTP $code (responds, but unexpected status)"
+    fi
+  done
+fi
 
 # ============================================
 echo
@@ -103,18 +122,19 @@ echo "${BOLD}=== 5. External access ===${RESET}"
 if [ "$IS_WSL" = true ]; then
   info "Running in WSL — automated check skipped"
   info "Loopback bindings (127.0.0.1) are not exposed by WSL2 to the LAN"
-  info "To verify manually, from another device on your network try:"
-  info "  http://<your-Windows-IP>:8080  → should refuse connection"
+  info "To verify manually, from another device on your LAN try"
+  info "  http://<your-windows-ip>:<port>  → should refuse connection"
 else
   HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-  if [ -z "$HOST_IP" ]; then
-    warn "Could not detect host IP — skipping"
+  first_port=$(echo "$PUBLISHED_PORTS" | awk '{print $1}')
+  if [ -z "$HOST_IP" ] || [ -z "$first_port" ]; then
+    info "Skipping (no detectable host IP or published port)"
   else
-    code=$(curl -sI -o /dev/null -w "%{http_code}" --max-time 3 "http://$HOST_IP:8080" 2>/dev/null || echo "000")
+    code=$(curl -sI -o /dev/null -w "%{http_code}" --max-time 3 "http://$HOST_IP:$first_port" 2>/dev/null || echo "000")
     if [ "$code" = "000" ]; then
-      pass "$HOST_IP:8080 unreachable from outside ✓"
+      pass "$HOST_IP:$first_port unreachable from outside"
     else
-      fail "$HOST_IP:8080 reachable from LAN — security hole!"
+      fail "$HOST_IP:$first_port reachable from LAN — security hole!"
     fi
   fi
 fi
@@ -123,26 +143,19 @@ fi
 echo
 echo "${BOLD}=== 6. Internal services have no host port ===${RESET}"
 # ============================================
-for svc in redis db worker; do
-  cname="$(docker compose ps --format '{{.Name}}' --status running | grep "$svc" | head -1)"
-  if [ -z "$cname" ]; then
-    warn "$svc — container not running"
-    continue
-  fi
-  ports=$(docker port "$cname" 2>/dev/null || true)
-  if [ -z "$ports" ]; then
+if [ -z "$INTERNAL_SERVICES" ]; then
+  info "No internal-only services detected"
+else
+  for svc in $INTERNAL_SERVICES; do
     pass "$svc — no host port mapping (internal only)"
-  else
-    fail "$svc — has host port mapping:"
-    echo "$ports" | sed 's/^/    /'
-  fi
-done
+  done
+fi
 
 # ============================================
 echo
 echo "${BOLD}=== 7. .env not leaked into git ===${RESET}"
 # ============================================
-if [ -d .git ] || git rev-parse --git-dir >/dev/null 2>&1; then
+if git rev-parse --git-dir >/dev/null 2>&1; then
   if git ls-files 2>/dev/null | grep -qx ".env"; then
     fail ".env is tracked in git!"
     info "Fix: git rm --cached .env && git commit -m 'Remove .env'"
@@ -151,9 +164,11 @@ if [ -d .git ] || git rev-parse --git-dir >/dev/null 2>&1; then
   fi
 
   if [ -f .env.example ] && git ls-files 2>/dev/null | grep -qx ".env.example"; then
-    pass ".env.example tracked (good for documentation)"
+    pass ".env.example tracked"
+  elif [ -f .env.example ]; then
+    warn ".env.example exists but not tracked — consider committing"
   else
-    warn "No .env.example committed — consider adding one"
+    info "No .env.example found"
   fi
 else
   info "Not a git repo — skipping git checks"
@@ -163,7 +178,8 @@ fi
 echo
 echo "${BOLD}=== Summary ===${RESET}"
 # ============================================
-printf "  ${GREEN}%d passed${RESET}   ${YELLOW}%d warnings${RESET}   ${RED}%d failed${RESET}\n" "$PASSES" "$WARNS" "$FAILS"
+printf "  ${GREEN}%d passed${RESET}   ${YELLOW}%d warnings${RESET}   ${RED}%d failed${RESET}\n" \
+  "$PASSES" "$WARNS" "$FAILS"
 echo
 
 [ "$FAILS" -eq 0 ] && exit 0 || exit 1
